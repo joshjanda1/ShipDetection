@@ -13,38 +13,197 @@ from tensorflow import keras
 from PIL import Image
 import os
 import cv2
-import random
+from skimage.data import imread
+from skimage.segmentation import mark_boundaries
+from skimage.measure import label, regionprops
+from skimage.util import montage
+import time
 
 ship_path = 'F:/Machine Learning/ShipDetection/'
 img_path = 'F:/Machine Learning/ShipDetection/train_v2/'
-train_segment = pd.read_csv(ship_path + 'train_ship_segmentations_v2.csv').set_index('ImageId')
+train_segment = pd.read_csv(ship_path + 'train_ship_segmentations_v2.csv')
 img_ids = os.listdir(img_path)
 #preprocessing
 #we want to remove all images without ships in them. This will resolve class imbalances.
 #https://www.kaggle.com/iafoss/unet34-submission-tta-0-699-new-public-lb
 
-train_segment = train_segment.dropna()
-uni = np.unique(train_segment.index, return_index=True)[1]
-train_segment = train_segment.iloc[uni]
+imgs_w_ships = train_segment.ImageId[train_segment.EncodedPixels.isnull()==False]
+imgs_w_ships = np.unique(imgs_w_ships.values) 
 
-sample_segment = train_segment.sample(n = 100, random_state = 27)
-img_ids = [name for name in img_ids if name in sample_segment.index] # keep all img ids that are in segment df
-imgs = []
-for i, img_id in enumerate(img_ids):
-    img = np.asarray(Image.open(img_path + img_id))
-    imgs.append(img)
+#thanks https://www.kaggle.com/voglinio/from-masks-to-bounding-boxes
+#ref https://www.kaggle.com/paulorzp/run-length-encode-and-decode
+
+montage_rgb = lambda x: np.stack([montage(x[:, :, :, i]) for i in range(x.shape[3])], -1)
+
+def multi_rle_encode(img):
+    labels = label(img[:, :, 0])
+    return [rle_encode(labels==k) for k in np.unique(labels[labels>0])]
+
+def rle_encode(img):
+    '''
+    img: numpy array, 1 - mask, 0 - background
+    Returns run length as string formated
+    '''
+    pixels = img.T.flatten()
+    pixels = np.concatenate([[0], pixels, [0]])
+    runs = np.where(pixels[1:] != pixels[:-1])[0] + 1
+    runs[1::2] -= runs[::2]
+    return ' '.join(str(x) for x in runs)
+
+def rle_decode(mask_rle, shape=(768, 768)):
+    '''
+    mask_rle: run-length as string formated (start length)
+    shape: (height,width) of array to return 
+    Returns numpy array, 1 - mask, 0 - background
+    '''
+    s = mask_rle.split()
+    starts, lengths = [np.asarray(x, dtype=int) for x in (s[0:][::2], s[1:][::2])]
+    starts -= 1
+    ends = starts + lengths
+    img = np.zeros(shape[0]*shape[1], dtype=np.uint8)
+    for lo, hi in zip(starts, ends):
+        img[lo:hi] = 1
+    return img.reshape(shape).T  # Needed to align to RLE direction
+
+def masks_as_image(in_mask_list, all_masks=None):
+    # Take the individual ship masks and create a single mask array for all ships
+    if all_masks is None:
+        all_masks = np.zeros((768, 768), dtype = np.int16)
+    #if isinstance(in_mask_list, list):
+    for mask in in_mask_list:
+        if isinstance(mask, str):
+            all_masks += rle_decode(mask)
+    return np.expand_dims(all_masks, -1)
+
+'''
+most of the following code below is
+used for testing, feel free to comment some out
+above and bottom code will have comments to indicate tests
+'''
+# test to make sure functions above are working and create bounding boxes
+for i in range(5):
+    image = imgs_w_ships[i]
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize = (15, 5))
+    img_0 = imread(img_path + image)
+    rle_0 = train_segment[train_segment.ImageId == image]['EncodedPixels']
+    mask_0 = masks_as_image(rle_0).reshape(768, 768) # reshape from 768x768x1 to 768x768
+    lbl_0 = label(mask_0) 
+    props = regionprops(lbl_0)
+    img_1 = img_0.copy()
+    print ('Image', image)
+    for prop in props:
+        print('Found bbox', prop.bbox)
+        cv2.rectangle(img_1, (prop.bbox[1], prop.bbox[0]), (prop.bbox[3], prop.bbox[2]), (255, 0, 0), 2)
+
+
+    ax1.imshow(img_0)
+    ax1.set_title('Image')
+    ax2.set_title('Mask')
+    ax3.set_title('Image with derived bounding box')
+    ax2.imshow(mask_0, cmap='gray')
+    ax3.imshow(img_1)
+    plt.show()
+# end test
+# convert masks of all images to bounding boxes
+bbox_imgs = {}
+start_time = time.time()
+for i in range(len(imgs_w_ships)):
     
-imgs = np.array(imgs)
+    img_id = imgs_w_ships[i]
+    image = cv2.imread(img_path + img_id) # read image in as np array
+    rle = train_segment.EncodedPixels[train_segment.ImageId == img_id] # get encoded pixels for correct img id
+    mask = masks_as_image(rle).reshape(768, 768) # reshape from 768x768x1 to 768x768
+    lbl = label(mask) # label the connected regions in mask array
+    props = regionprops(lbl) # generate bounding boxes for labeled masks
+    bboxes = []
+    for prop in props: # iterate over region props
+        bboxes.append(prop.bbox) # add each bounding box for each ship in image to list
+    bbox_imgs['{0}'.format(img_id)] = bboxes # insert into dictionary
+    
+    if i % 500 == 0:
+        current_time = time.time()
+        percent = (i / len(imgs_w_ships))*100
+        print('Images Processed: {0}/{1} - {2:.3f}%'.format(i, len(imgs_w_ships), percent))
+        print('Processing Time Elapsed: {:.1f}s'.format(current_time - start_time))
 
-Xtrain = imgs
+bbox_imgs_df = pd.DataFrame([bbox_imgs]) # convert dict to pandas dataframe
+bbox_imgs_df = bbox_imgs_df.transpose() # tranpose to get correct format
+bbox_imgs_df = bbox_imgs_df.reset_index() # reset index to get image id column
+bbox_imgs_df.columns = ['ImageId', 'bbox_list'] # rename columns
+#bbox_imgs_df.to_csv(ship_path + 'bbox_imgs.csv')
+# test to make sure dataframe is appropriately setup
+for i in range(5):
+    
+    img_id = imgs_w_ships[i]
+    image = cv2.imread(img_path + img_id)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (15, 5))
+    bboxes = bbox_imgs_df.bbox_list[bbox_imgs_df.ImageId == img_id]
+    image1 = image.copy()
+    bboxes = bboxes.reset_index(drop = True) # easier to access tuples in list
+    for bbox in bboxes[0]:
+        cv2.rectangle(image1, (bbox[1], bbox[0]), (bbox[3], bbox[2]), (255, 0, 0), 2)
+    ax1.imshow(image)
+    ax1.set_title('Image: {0}'.format(img_id))
+    ax2.set_title('Image with bounding box')
+    ax2.imshow(image1)
+    plt.show()
+# used for checking df
+
+sample_img_df = bbox_imgs_df.sample(100)
+
+# thanks https://stackoverflow.com/questions/49466033/resizing-image-and-its-bounding-box
+def resize_image(img, bboxes, resize = 224):
+    
+    y_ = img.shape[0]
+    y_scale = resize / y_
+    
+    x_ = img.shape[1]
+    x_scale = resize / x_
+    
+    img = cv2.resize(img, (resize, resize))
+    bboxes = bboxes.reset_index(drop = True) # easier to access tuples in list
+    bboxes2 = []
+    for bbox in bboxes[0]:
+        x = int(np.round(bbox[0] * x_scale))
+        xmax = int(np.round(bbox[2] * x_scale))
+        y = int(np.round(bbox[1] * y_scale))
+        ymax = int(np.round(bbox[3] * y_scale))
+        bboxes2.append((x, y, xmax, ymax))
+    return bboxes2, img
+
+# test to make sure rescale worked properly
+for i in range(5):
+    
+    img_id = imgs_w_ships[i]
+    image = cv2.imread(img_path + img_id)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (15, 5))
+    bboxes = bbox_imgs_df.bbox_list[bbox_imgs_df.ImageId == img_id]
+    bboxes = bboxes.reset_index(drop = True) # easier to access tuples in list
+    
+    res_bboxes, res_image = resize_image(image, bboxes)
+    for bbox in bboxes[0]:
+        cv2.rectangle(image, (bbox[1], bbox[0]), (bbox[3], bbox[2]), (255, 0, 0), 2)
+    for bbox in res_bboxes:
+        cv2.rectangle(res_image, (bbox[1], bbox[0]), (bbox[3], bbox[2]), (255, 0, 0), 2)
+    
+    ax1.imshow(image)
+    ax1.set_title('Image: {0} - 768x768'.format(img_id))
+    ax2.set_title('Image: {0} - 224x224'.format(img_id))
+    ax2.imshow(res_image)
+    plt.show()
+
+# end test
+    
+
 #thanks http://puzzlemusa.com/2018/04/24/resnet-in-keras/
 #thanks https://arxiv.org/pdf/1512.03385.pdf
 def resnet():
     #input layer
-    inpt = keras.layers.Input(shape = (768, 768, 3), name = 'input')
+    inpt = keras.layers.Input(shape = (224, 224, 3), name = 'input')
     #1st conv layer - begin resnet
     conv1 = keras.layers.Conv2D(64, (7, 7), strides = (2, 2), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv1', input_shape = Xtrain.shape[1:])(inpt)
+                        kernel_initializer = 'he_normal', name = 'conv1', input_shape = (128, 128, 3))(inpt)
     norm1 = keras.layers.BatchNormalization(axis = 3, name = 'normal1')(conv1)
     relu1 = keras.layers.Activation('relu', name = 'relu1')(norm1)
     mpool1 = keras.layers.MaxPooling2D(pool_size = (3, 3), strides = (2, 2), padding = 'same', name = 'pool1')(relu1)
@@ -149,8 +308,8 @@ def resnet():
                                activation = 'relu', name = 'fc1')(flatten)
     dense2 = keras.layers.Dense(4096, kernel_initializer = 'he_normal',
                                activation = 'relu', name = 'fc2')(dense1)
-    output = keras.layers.Dense(10, kernel_initializer = 'he_normal',
-                               activation = 'softmax', name = 'output')(dense2)
+    output = keras.layers.Dense(1, kernel_initializer = 'he_normal',
+                               activation = 'sigmoid', name = 'output')(dense2)
     
     model = keras.models.Model(inpt, output)
     
@@ -158,6 +317,17 @@ def resnet():
 
 model = resnet()
 
+optimizer = keras.optimizers.RMSprop(.0001)
+model.compile(
+    optimizer=optimizer, 
+    loss="binary_crossentropy", 
+    metrics=["accuracy"]
+)
 
-
-
+history = model.fit(
+    train_generator, 
+    steps_per_epoch=train_steps,
+    validation_data=validate_generator,
+    validation_steps=validate_steps,
+    epochs=epochs
+)
