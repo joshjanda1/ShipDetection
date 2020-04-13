@@ -18,17 +18,23 @@ from skimage.segmentation import mark_boundaries
 from skimage.measure import label, regionprops
 from skimage.util import montage
 import time
+import ast
+from sklearn.model_selection import train_test_split
 
 ship_path = 'F:/Machine Learning/ShipDetection/'
 img_path = 'F:/Machine Learning/ShipDetection/train_v2/'
+resize_path = 'F:/Machine Learning/ShipDetection/train_v2_resized/'
 train_segment = pd.read_csv(ship_path + 'train_ship_segmentations_v2.csv')
-img_ids = os.listdir(img_path)
 #preprocessing
 #we want to remove all images without ships in them. This will resolve class imbalances.
 #https://www.kaggle.com/iafoss/unet34-submission-tta-0-699-new-public-lb
 
 imgs_w_ships = train_segment.ImageId[train_segment.EncodedPixels.isnull()==False]
 imgs_w_ships = np.unique(imgs_w_ships.values) 
+
+bbox_df = pd.read_csv(ship_path + 'bbox_imgs.csv')
+labeled_df = pd.read_csv(ship_path + 'labeled_ships.csv')
+reformatted_labeled_df = pd.read_csv(ship_path + 'labeled_ships2.csv')
 
 #thanks https://www.kaggle.com/voglinio/from-masks-to-bounding-boxes
 #ref https://www.kaggle.com/paulorzp/run-length-encode-and-decode
@@ -75,126 +81,186 @@ def masks_as_image(in_mask_list, all_masks=None):
             all_masks += rle_decode(mask)
     return np.expand_dims(all_masks, -1)
 
-'''
-most of the following code below is
-used for testing, feel free to comment some out
-above and bottom code will have comments to indicate tests
-'''
-# test to make sure functions above are working and create bounding boxes
-for i in range(5):
-    image = imgs_w_ships[i]
+def img_w_bbox(bbox_df, img_path, resize_path, resize = True, num_imgs = 5, seed = 27):
+    
+    '''
+    function used to test if bounding boxes align with ship in images
+    
+    args:
+        bbox_df - dataframe consisting of ImageId and list of tuples of bouning boxes (output from create_bboxes function)
+        img_path - path to original images
+        resize_path - path to resized images
+        resize - Default: True - overlay resized images with resized bounding boxes? Set to False to use original image and original bbox
+        num_imgs - number of images to view
+        seed - seed sample to obtain same pictures
+    output:
+        side-by-side plot of original (or resized) image and original (or resized) image overlayed with appropriate bounding box(es)
+        
+    '''
+    
+    sample = bbox_df.sample(num_imgs, random_state = seed)
+    for i, (img_id, bboxes) in sample.iterrows():
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (15, 5)) # initiate plots
+        if resize:
+            img = cv2.imread(resize_path + img_id) # get resized image if resize is True
+        else:
+            img = cv2.imread(img_path + img_id) # get original image if resize is False
+        img_overlay = img.copy() # copy image to overlay
+        bboxes = ast.literal_eval(bboxes) # needed after reloading bbox_df from csv file as bbox lists are treated as strings
+        for bbox in bboxes:
+            if resize:
+                x, y, xmax, ymax = resize_bbox(bbox)
+                cv2.rectangle(img_overlay, (y, x), (ymax, xmax), (255, 0, 0), 2)
+            else:
+                x, y, xmax, ymax = bbox
+                cv2.rectangle(img_overlay, (y, x), (ymax, xmax), (255, 0, 0), 2)
+        ax1.imshow(img)
+        ax2.imshow(img_overlay)
+        if resize: # plot titles if resized images..
+            ax1.set_title('Image ID: {0}\nImage Size: 224x224'.format(img_id))
+            ax2.set_title('Image ID: {0}\nWith Resized Bounding Box(es)'.format(img_id))
+        else: # plot titles if original images..
+            ax1.set_title('Image ID: {0}\nImage Size: 768x768'.format(img_id))
+            ax2.set_title('Image ID: {0}\nWith Original Bounding Box(es)'.format(img_id))
+        plt.show()
+        
+def create_bboxes(imgs_w_ships, segment_df,  img_path, img_size = 768, to_csv = False):
+    
+    '''
+    function is used to convert encoded pixel masks to bounding boxes
+    for localizing object detection
+    args:
+        imgs_w_ships - list of all images containing ships (may be more than one ship per image)
+        segment_df - dataframe containing ImageIds and corresponding encoded pixels of masks
+        img_path - path to folder containing images
+        img_size - original image size
+        to_csv - Default: False - set to true to export created dictionary to csv file of imageid and corresponding bboxes
+    returns:
+        pandas dataframe consisting of columns 'ImageId' and 'bbox_list'
+        where ImageId is the image id and bbox_list is a list of tuples containing bounding boxes in each image
+    '''
+    
+    bbox_imgs = {} # create empty dictionary to store images
+    start = time.time() # used to compute elasped time
+    
+    for i in range(len(imgs_w_ships)):
+        
+        img_id = imgs_w_ships[i]
+        rle = segment_df.EncodedPixels[segment_df.ImageId == img_id] # get encoded pixels for correct img id
+        mask = masks_as_image(rle).reshape(768, 768) # reshape from 768x768x1 to 768x768
+        lbl = label(mask) # label the connected regions in mask array
+        props = regionprops(lbl) # generate bounding box regions for labeled masks
+        bboxes = []
+        for prop in props: # iterate over region props 
+            bboxes.append(prop.bbox) # add each bounding box for each ship in image to list
+        bbox_imgs['{0}'.format(img_id)] = bboxes # insert into dictionary
+        
+        if i % 500 == 0:
+            current = time.time()
+            percent = (i / len(imgs_w_ships))*100
+            tot_mins = (current - start) / 60
+            print('Images Processed: {0}/{1} - {2:.3f}% - Time Elasped: {3:.2f}m'.format(i, len(imgs_w_ships), percent, tot_mins))
+            
+    bbox_imgs_df = pd.DataFrame([bbox_imgs]) # convert dict to pandas dataframe
+    bbox_imgs_df = bbox_imgs_df.transpose() # transpose to get images x 2 format
+    bbox_imgs_df = bbox_imgs_df.reset_index() # reset index to get ImageId column
+    bbox_imgs_df.columns = ['ImageId', 'bbox_list']
+    
+    if to_csv:
+        bbox_imgs_df.to_csv(img_path + 'bbox_imgs.csv', index = False)
+    
+    return bbox_imgs_df
+        
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize = (15, 5))
-    img_0 = imread(img_path + image)
-    rle_0 = train_segment[train_segment.ImageId == image]['EncodedPixels']
-    mask_0 = masks_as_image(rle_0).reshape(768, 768) # reshape from 768x768x1 to 768x768
-    lbl_0 = label(mask_0) 
-    props = regionprops(lbl_0)
-    img_1 = img_0.copy()
-    print ('Image', image)
-    for prop in props:
-        print('Found bbox', prop.bbox)
-        cv2.rectangle(img_1, (prop.bbox[1], prop.bbox[0]), (prop.bbox[3], prop.bbox[2]), (255, 0, 0), 2)
+def resize_bbox(bbox, size = 768, target = 224):
+    
+    '''
+    thanks https://stackoverflow.com/questions/49466033/resizing-image-and-its-bounding-box
+    function used to resize bbox to appropriate target image size
+    
+    args:
+        bbox - tuple consisting of x, y, xmax, ymax for bounding box
+        size - original image size (square)
+        target - target image size (square)
+    returns:
+        coordinates of scaled bounding box
+    '''
+    
+    scale = target / size # scale for resize
+    
+    x = int(np.round(bbox[0] * scale))
+    xmax = int(np.round(bbox[2] * scale))
+    y = int(np.round(bbox[1] * scale))
+    ymax = int(np.round(bbox[3] * scale))
+    #perform rescaling of each point
+    
+    return x, y, xmax, ymax
 
+def resize_and_relabel_bbox_df(bbox_df, ship_path, size = 768, target = 224, to_csv = False):
+    '''
+    now need to transform bbox df to be a df with each row containing an
+    imageid, x, y, xmax, ymax, and a label (ship for all images)
+    so there may be multiple rows of identical imageids if more than one ship in image
+    
+    this function performs the above description
+    args:
+        bbox_df - dataframe consisting of format ImageId, bbox where bbox is the list bboxes in each ImageId
+        size - original size of image
+        target - target image size
+        ship_path - path to export csv to
+        to_csv - default: False - set to true to export csv to ship_path root directory
+    returns: 
+        labeled dataframe of format imageid, x, y, xmax, ymax, and a label (ship for all images)
+    '''
+    labeled_df = pd.DataFrame([], columns = ['ImageId', 'x', 'y', 'xmax', 'ymax', 'label'])
+    item_label = 'Ship' # used to label each bbox.. which is ship for all.
+    start_time = time.time() # used to calculate total elapsed time
+    for i, (img_id, bboxes) in bbox_df.iterrows():
+        bboxes = ast.literal_eval(bboxes) # needed after reloading bbox_df from csv file as bbox lists are treated as strings
+        if len(bboxes) > 1: # covers case with more than one ship in image
+            for bbox in bboxes:
+                # resize bboxes
+                x, y, xmax, ymax = resize_bbox(bbox, size = 768, target = 224)
+                labeled_df = labeled_df.append(pd.DataFrame([[img_id, x, y, xmax, ymax, item_label]],
+                                                            columns = ['ImageId', 'x', 'y', 'xmax', 'ymax', 'label']))
+        else: # covers case with only one ship in image
+            for bbox in bboxes:
+                # resize bboxes
+                x, y, xmax, ymax = resize_bbox(bbox, size = 768, target = 224)
+                labeled_df = labeled_df.append(pd.DataFrame([[img_id, x, y, xmax, ymax, item_label]],
+                                                            columns = ['ImageId', 'x', 'y', 'xmax', 'ymax', 'label']))
+        if i % 500 == 0:
+            current_time = time.time()
+            percent = (i / len(imgs_w_ships))*100
+            print('Images Processed: {0}/{1} - {2:.3f}%'.format(i, len(imgs_w_ships), percent))
+            print('Processing Time Elapsed: {:.1f}s'.format(current_time - start_time))
+    if to_csv:
+        labeled_df.to_csv(ship_path + 'labeled_ships.csv')
+    return labeled_df
 
-    ax1.imshow(img_0)
-    ax1.set_title('Image')
-    ax2.set_title('Mask')
-    ax3.set_title('Image with derived bounding box')
-    ax2.imshow(mask_0, cmap='gray')
-    ax3.imshow(img_1)
-    plt.show()
-# end test
-# convert masks of all images to bounding boxes
-bbox_imgs = {}
-start_time = time.time()
-for i in range(len(imgs_w_ships)):
+def reformat_label_df(labeled_df, ship_path, to_csv = False):
+    '''
+    use to reformat labeled df to specific format required
+    for pushing through model training algorithm
     
-    img_id = imgs_w_ships[i]
-    image = cv2.imread(img_path + img_id) # read image in as np array
-    rle = train_segment.EncodedPixels[train_segment.ImageId == img_id] # get encoded pixels for correct img id
-    mask = masks_as_image(rle).reshape(768, 768) # reshape from 768x768x1 to 768x768
-    lbl = label(mask) # label the connected regions in mask array
-    props = regionprops(lbl) # generate bounding boxes for labeled masks
-    bboxes = []
-    for prop in props: # iterate over region props
-        bboxes.append(prop.bbox) # add each bounding box for each ship in image to list
-    bbox_imgs['{0}'.format(img_id)] = bboxes # insert into dictionary
-    
-    if i % 500 == 0:
-        current_time = time.time()
-        percent = (i / len(imgs_w_ships))*100
-        print('Images Processed: {0}/{1} - {2:.3f}%'.format(i, len(imgs_w_ships), percent))
-        print('Processing Time Elapsed: {:.1f}s'.format(current_time - start_time))
-
-bbox_imgs_df = pd.DataFrame([bbox_imgs]) # convert dict to pandas dataframe
-bbox_imgs_df = bbox_imgs_df.transpose() # tranpose to get correct format
-bbox_imgs_df = bbox_imgs_df.reset_index() # reset index to get image id column
-bbox_imgs_df.columns = ['ImageId', 'bbox_list'] # rename columns
-#bbox_imgs_df.to_csv(ship_path + 'bbox_imgs.csv')
-# test to make sure dataframe is appropriately setup
-for i in range(5):
-    
-    img_id = imgs_w_ships[i]
-    image = cv2.imread(img_path + img_id)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (15, 5))
-    bboxes = bbox_imgs_df.bbox_list[bbox_imgs_df.ImageId == img_id]
-    image1 = image.copy()
-    bboxes = bboxes.reset_index(drop = True) # easier to access tuples in list
-    for bbox in bboxes[0]:
-        cv2.rectangle(image1, (bbox[1], bbox[0]), (bbox[3], bbox[2]), (255, 0, 0), 2)
-    ax1.imshow(image)
-    ax1.set_title('Image: {0}'.format(img_id))
-    ax2.set_title('Image with bounding box')
-    ax2.imshow(image1)
-    plt.show()
-# used for checking df
-
-sample_img_df = bbox_imgs_df.sample(100)
-
-# thanks https://stackoverflow.com/questions/49466033/resizing-image-and-its-bounding-box
-def resize_image(img, bboxes, resize = 224):
-    
-    y_ = img.shape[0]
-    y_scale = resize / y_
-    
-    x_ = img.shape[1]
-    x_scale = resize / x_
-    
-    img = cv2.resize(img, (resize, resize))
-    bboxes = bboxes.reset_index(drop = True) # easier to access tuples in list
-    bboxes2 = []
-    for bbox in bboxes[0]:
-        x = int(np.round(bbox[0] * x_scale))
-        xmax = int(np.round(bbox[2] * x_scale))
-        y = int(np.round(bbox[1] * y_scale))
-        ymax = int(np.round(bbox[3] * y_scale))
-        bboxes2.append((x, y, xmax, ymax))
-    return bboxes2, img
-
-# test to make sure rescale worked properly
-for i in range(5):
-    
-    img_id = imgs_w_ships[i]
-    image = cv2.imread(img_path + img_id)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (15, 5))
-    bboxes = bbox_imgs_df.bbox_list[bbox_imgs_df.ImageId == img_id]
-    bboxes = bboxes.reset_index(drop = True) # easier to access tuples in list
-    
-    res_bboxes, res_image = resize_image(image, bboxes)
-    for bbox in bboxes[0]:
-        cv2.rectangle(image, (bbox[1], bbox[0]), (bbox[3], bbox[2]), (255, 0, 0), 2)
-    for bbox in res_bboxes:
-        cv2.rectangle(res_image, (bbox[1], bbox[0]), (bbox[3], bbox[2]), (255, 0, 0), 2)
-    
-    ax1.imshow(image)
-    ax1.set_title('Image: {0} - 768x768'.format(img_id))
-    ax2.set_title('Image: {0} - 224x224'.format(img_id))
-    ax2.imshow(res_image)
-    plt.show()
-
-# end test
-    
+    args:
+        labeled_df - pandas dataframe of format ImageId, x, y, xmax, ymax, label
+        ship_path - path to export csv to
+        to_csv - default: False. Set to true to export csv to ship_path root directory
+    returns:
+        reformatted dataframe of format required for training
+    '''
+    labeled_df['file_path'] = img_path + labeled_df['ImageId']
+    labeled_df = labeled_df.reset_index(drop=True)
+    labeled_df.drop('ImageId', axis=1, inplace=True)
+    cols = labeled_df.columns.tolist()
+    cols = cols[-1:] + cols[:-1]
+    labeled_df = labeled_df[cols]
+    labeled_df.columns = ['file_path', 'x1', 'y1', 'x2', 'y2', 'class_name']
+    if to_csv:
+        labeled_df.to_csv(ship_path + 'labeled_ships_reformat.csv', index = False)
+    return labeled_df
 
 #thanks http://puzzlemusa.com/2018/04/24/resnet-in-keras/
 #thanks https://arxiv.org/pdf/1512.03385.pdf
@@ -331,3 +397,18 @@ history = model.fit(
     validation_steps=validate_steps,
     epochs=epochs
 )
+
+from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Input
+from tensorflow.python.keras.applications.xception import Xception
+
+inp = Input(shape = (224, 224, 3))
+base_model = Xception(include_top = False, input_tensor = inp, weights= 'imagenet')
+y = base_model.layers[-1].output
+y = GlobalAveragePooling2D()(y)
+y = Dense(4)(y)
+model = keras.models.Model(inp, y)
+
+sample_df = labeled_df2.sample(100, random_state = 27)
+train_df, val_df = train_test_split(sample_df, test_size = .25, random_state = 27)
+
+
