@@ -1,13 +1,26 @@
-import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
 import time
-import os
 
 ship_path = 'F:/Machine Learning/ShipDetection/'
 
-def rescale_imgs(directory, to_directory, size):
+def rescale_imgs(directory, to_directory, size = (256, 256)):
+    '''
+    Parameters
+    ----------
+    directory : str
+        Main directory of images. in this case, use the ship_path defined at the top of the file.
+    to_directory : str
+        Directory to save resized images.
+    size : tuple
+        Size of the image. Default is (256, 256)
+
+    Returns
+    -------
+    None.
+
+    '''
     start = time.time()
     # code to get images with ships
     # only want unique images with ships
@@ -25,6 +38,3 @@ def rescale_imgs(directory, to_directory, size):
             curr = time.time() 
             mins = (curr - start) / 60
             print('Images Processed: {0}/{1} - Time Elasped: {2:.2f}m'.format(i, tot_img, mins))
-
-rescale_imgs(ship_path, ship_path + 'train_v2_resized/', (224, 224))
- 
