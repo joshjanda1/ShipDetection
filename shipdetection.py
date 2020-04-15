@@ -8,42 +8,42 @@ Created on Sat Apr 11 12:17:59 2020
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import tensorflow as tf
-from tensorflow import keras
-from PIL import Image
-import os
 import cv2
-from skimage.data import imread
-from skimage.segmentation import mark_boundaries
 from skimage.measure import label, regionprops
-from skimage.util import montage
 import time
 import ast
-from sklearn.model_selection import train_test_split
+
 
 ship_path = 'F:/Machine Learning/ShipDetection/'
 img_path = 'F:/Machine Learning/ShipDetection/train_v2/'
 resize_path = 'F:/Machine Learning/ShipDetection/train_v2_resized/'
+resize_path2 = 'F:/Machine Learning/ShipDetection/train_v2_resized_v2/'
 train_segment = pd.read_csv(ship_path + 'train_ship_segmentations_v2.csv')
-#preprocessing
-#we want to remove all images without ships in them. This will resolve class imbalances.
-#https://www.kaggle.com/iafoss/unet34-submission-tta-0-699-new-public-lb
+
 
 imgs_w_ships = train_segment.ImageId[train_segment.EncodedPixels.isnull()==False]
 imgs_w_ships = np.unique(imgs_w_ships.values) 
 
+'''
+The code below is used for testing purposes.
+If you have saved the dataframes outputted from functions
+create_bbox, resize_and_relabel_bbox, and reformat_label_df
+then use the code to load the csvs to avoid reprocessing.
+
+If processed correctly, you should not need to rerun these utilities.
+
+
 bbox_df = pd.read_csv(ship_path + 'bbox_imgs.csv')
-labeled_df = pd.read_csv(ship_path + 'labeled_ships.csv')
-reformatted_labeled_df = pd.read_csv(ship_path + 'labeled_ships2.csv')
+resized_bbox_df = pd.read_csv(ship_path + 'labeled_ships.csv')
+annotations_final = pd.read_csv(ship_path + 'annotate.txt', header = False)
+annotations_final.columns = ['file_path', 'x1', 'y1', 'x2', 'y2', 'class_name']
+'''
+
+
+
 
 #thanks https://www.kaggle.com/voglinio/from-masks-to-bounding-boxes
 #ref https://www.kaggle.com/paulorzp/run-length-encode-and-decode
-
-montage_rgb = lambda x: np.stack([montage(x[:, :, :, i]) for i in range(x.shape[3])], -1)
-
-def multi_rle_encode(img):
-    labels = label(img[:, :, 0])
-    return [rle_encode(labels==k) for k in np.unique(labels[labels>0])]
 
 def rle_encode(img):
     '''
@@ -81,7 +81,7 @@ def masks_as_image(in_mask_list, all_masks=None):
             all_masks += rle_decode(mask)
     return np.expand_dims(all_masks, -1)
 
-def img_w_bbox(bbox_df, img_path, resize_path, resize = True, num_imgs = 5, seed = 27):
+def img_w_bbox(bbox_df, img_path, resize_path, resize = True, size = 256, num_imgs = 5, seed = 27):
     
     '''
     function used to test if bounding boxes align with ship in images
@@ -118,14 +118,14 @@ def img_w_bbox(bbox_df, img_path, resize_path, resize = True, num_imgs = 5, seed
         ax1.imshow(img)
         ax2.imshow(img_overlay)
         if resize: # plot titles if resized images..
-            ax1.set_title('Image ID: {0}\nImage Size: 224x224'.format(img_id))
+            ax1.set_title('Image ID: {0}\nImage Size: {1}x{2}'.format(img_id, size, size))
             ax2.set_title('Image ID: {0}\nWith Resized Bounding Box(es)'.format(img_id))
         else: # plot titles if original images..
             ax1.set_title('Image ID: {0}\nImage Size: 768x768'.format(img_id))
             ax2.set_title('Image ID: {0}\nWith Original Bounding Box(es)'.format(img_id))
         plt.show()
         
-def create_bboxes(imgs_w_ships, segment_df,  img_path, img_size = 768, to_csv = False):
+def create_bboxes(imgs_w_ships, segment_df,  ship_path, img_size = 768, to_csv = False):
     
     '''
     function is used to convert encoded pixel masks to bounding boxes
@@ -133,7 +133,7 @@ def create_bboxes(imgs_w_ships, segment_df,  img_path, img_size = 768, to_csv = 
     args:
         imgs_w_ships - list of all images containing ships (may be more than one ship per image)
         segment_df - dataframe containing ImageIds and corresponding encoded pixels of masks
-        img_path - path to folder containing images
+        ship_path - path to main directory for model
         img_size - original image size
         to_csv - Default: False - set to true to export created dictionary to csv file of imageid and corresponding bboxes
     returns:
@@ -168,12 +168,12 @@ def create_bboxes(imgs_w_ships, segment_df,  img_path, img_size = 768, to_csv = 
     bbox_imgs_df.columns = ['ImageId', 'bbox_list']
     
     if to_csv:
-        bbox_imgs_df.to_csv(img_path + 'bbox_imgs.csv', index = False)
+        bbox_imgs_df.to_csv(ship_path + 'bbox_imgs.csv', index = False)
     
     return bbox_imgs_df
         
 
-def resize_bbox(bbox, size = 768, target = 224):
+def resize_bbox(bbox, size = 768, target = 256):
     
     '''
     thanks https://stackoverflow.com/questions/49466033/resizing-image-and-its-bounding-box
@@ -197,7 +197,7 @@ def resize_bbox(bbox, size = 768, target = 224):
     
     return x, y, xmax, ymax
 
-def resize_and_relabel_bbox_df(bbox_df, ship_path, size = 768, target = 224, to_csv = False):
+def resize_and_relabel_bbox_df(bbox_df, ship_path, size = 768, target = 256, to_csv = False):
     '''
     now need to transform bbox df to be a df with each row containing an
     imageid, x, y, xmax, ymax, and a label (ship for all images)
@@ -221,194 +221,56 @@ def resize_and_relabel_bbox_df(bbox_df, ship_path, size = 768, target = 224, to_
         if len(bboxes) > 1: # covers case with more than one ship in image
             for bbox in bboxes:
                 # resize bboxes
-                x, y, xmax, ymax = resize_bbox(bbox, size = 768, target = 224)
+                x, y, xmax, ymax = resize_bbox(bbox, size, target)
                 labeled_df = labeled_df.append(pd.DataFrame([[img_id, x, y, xmax, ymax, item_label]],
                                                             columns = ['ImageId', 'x', 'y', 'xmax', 'ymax', 'label']))
         else: # covers case with only one ship in image
             for bbox in bboxes:
                 # resize bboxes
-                x, y, xmax, ymax = resize_bbox(bbox, size = 768, target = 224)
+                x, y, xmax, ymax = resize_bbox(bbox, size, target)
                 labeled_df = labeled_df.append(pd.DataFrame([[img_id, x, y, xmax, ymax, item_label]],
                                                             columns = ['ImageId', 'x', 'y', 'xmax', 'ymax', 'label']))
         if i % 500 == 0:
             current_time = time.time()
             percent = (i / len(imgs_w_ships))*100
-            print('Images Processed: {0}/{1} - {2:.3f}%'.format(i, len(imgs_w_ships), percent))
+            print('Images Processed: {0}/{1} - {2:.3f}%'.format(i, len(bbox_df), percent))
             print('Processing Time Elapsed: {:.1f}s'.format(current_time - start_time))
     if to_csv:
-        labeled_df.to_csv(ship_path + 'labeled_ships.csv')
+        labeled_df.to_csv(ship_path + 'labeled_ships.csv', index = False)
     return labeled_df
 
-def reformat_label_df(labeled_df, ship_path, to_csv = False):
+def reformat_label_df(labeled_df, img_path, ship_path, to_csv = False):
     '''
     use to reformat labeled df to specific format required
     for pushing through model training algorithm
     
     args:
         labeled_df - pandas dataframe of format ImageId, x, y, xmax, ymax, label
+        img_path - path to images
         ship_path - path to export csv to
         to_csv - default: False. Set to true to export csv to ship_path root directory
     returns:
         reformatted dataframe of format required for training
     '''
-    labeled_df['file_path'] = img_path + labeled_df['ImageId']
-    labeled_df = labeled_df.reset_index(drop=True)
-    labeled_df.drop('ImageId', axis=1, inplace=True)
-    cols = labeled_df.columns.tolist()
+    labeled_df_temp = labeled_df.copy()
+    
+    x = labeled_df.x
+    y = labeled_df.y
+    xmax = labeled_df.xmax
+    ymax = labeled_df.ymax
+    labeled_df_temp.x = y
+    labeled_df_temp.y = x
+    labeled_df_temp.xmax = ymax
+    labeled_df_temp.ymax = xmax
+    
+    labeled_df_temp['file_path'] = img_path + labeled_df['ImageId']
+    labeled_df_temp.drop('ImageId', axis=1, inplace=True)
+    cols = labeled_df_temp.columns.tolist()
     cols = cols[-1:] + cols[:-1]
-    labeled_df = labeled_df[cols]
-    labeled_df.columns = ['file_path', 'x1', 'y1', 'x2', 'y2', 'class_name']
+    
+    labeled_df_temp = labeled_df_temp[cols]
+    labeled_df_temp.columns = ['file_path', 'x1', 'y1', 'x2', 'y2', 'class_name']
     if to_csv:
-        labeled_df.to_csv(ship_path + 'labeled_ships_reformat.csv', index = False)
-    return labeled_df
-
-#thanks http://puzzlemusa.com/2018/04/24/resnet-in-keras/
-#thanks https://arxiv.org/pdf/1512.03385.pdf
-def resnet():
-    #input layer
-    inpt = keras.layers.Input(shape = (224, 224, 3), name = 'input')
-    #1st conv layer - begin resnet
-    conv1 = keras.layers.Conv2D(64, (7, 7), strides = (2, 2), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv1', input_shape = (128, 128, 3))(inpt)
-    norm1 = keras.layers.BatchNormalization(axis = 3, name = 'normal1')(conv1)
-    relu1 = keras.layers.Activation('relu', name = 'relu1')(norm1)
-    mpool1 = keras.layers.MaxPooling2D(pool_size = (3, 3), strides = (2, 2), padding = 'same', name = 'pool1')(relu1)
-    #2nd conv layer - no add
-    conv2 = keras.layers.Conv2D(64, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv2')(mpool1)
-    norm2 = keras.layers.BatchNormalization(axis = 3, name = 'normal2')(conv2)
-    relu2 = keras.layers.Activation('relu', name = 'relu2')(norm2)
-    #3rd conv layer - add
-    conv3 = keras.layers.Conv2D(64, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv3')(relu2)
-    add1 = keras.layers.add([mpool1, conv3], name = 'add1')
-    norm3 = keras.layers.BatchNormalization(axis = 3, name = 'normal3')(add1)
-    relu3 = keras.layers.Activation('relu', name = 'relu3')(norm3)
-    #4th conv layer - no add
-    conv4 = keras.layers.Conv2D(64, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv4')(relu3)
-    norm4 = keras.layers.BatchNormalization(axis = 3, name = 'normal4')(conv4)
-    relu4 = keras.layers.Activation('relu', name = 'relu4')(norm4)
-    #5th conv layer - add
-    conv5 = keras.layers.Conv2D(64, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv5')(relu4)
-    add2 = keras.layers.add([add1, conv5], name = 'add2')
-    norm5 = keras.layers.BatchNormalization(axis = 3, name = 'normal5')(add2)
-    relu5 = keras.layers.Activation('relu', name = 'relu5')(norm5)
-    #6th conv layer - no add
-    conv6 = keras.layers.Conv2D(128, (3, 3), strides = (2, 2), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv6')(relu5)
-    norm6 = keras.layers.BatchNormalization(axis = 3, name = 'normal6')(conv6)
-    relu6 = keras.layers.Activation('relu', name = 'relu6')(norm6)
-    #7th conv layer - add
-    conv7 = keras.layers.Conv2D(128, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv7')(relu6)
-    conv7_2 = keras.layers.Conv2D(128, (1, 1), strides = (2, 2), padding = 'valid', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv7_2')(add2)
-    add3 = keras.layers.add([conv7, conv7_2], name = 'add3')
-    norm7 = keras.layers.BatchNormalization(axis = 3, name = 'normal7')(add3)
-    relu7 = keras.layers.Activation('relu', name = 'relu7')(norm7)
-    #8th conv layer - no add
-    conv8 = keras.layers.Conv2D(128, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv8')(relu7)
-    norm8 = keras.layers.BatchNormalization(axis = 3, name = 'normal8')(conv8)
-    relu8 = keras.layers.Activation('relu', name = 'relu8')(norm8)
-    #9th conv layer - add
-    conv9 = keras.layers.Conv2D(128, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv9')(relu8)
-    add4 = keras.layers.add([add3, conv9], name = 'add4')
-    norm9 = keras.layers.BatchNormalization(axis = 3, name = 'normal9')(add4)
-    relu9 = keras.layers.Activation('relu', name = 'relu9')(norm9)
-    #9th layer continued - jump between dotted lines in pdf architecture
-    conv9 = keras.layers.Conv2D(256, (3, 3), strides = (2, 2), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv9_2')(relu9)
-    norm9 = keras.layers.BatchNormalization(axis = 3, name = 'normal9_2')(conv9)
-    relu9 = keras.layers.Activation('relu', name = 'relu9_2')(norm9)
-    #10th conv layer - add
-    conv10 = keras.layers.Conv2D(256, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv10')(relu9)
-    conv10_2 = keras.layers.Conv2D(256, (2, 2), strides = (2, 2), padding = 'valid', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv10_2')(add4)
-    add5 = keras.layers.add([conv10, conv10_2], name = 'add5')
-    norm10 = keras.layers.BatchNormalization(axis = 3, name = 'normal10')(add5)
-    relu10 = keras.layers.Activation('relu', name = 'relu10')(norm10)
-    #11th conv layer - no add
-    conv11 = keras.layers.Conv2D(256, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv11')(relu10)
-    norm11 = keras.layers.BatchNormalization(axis = 3, name = 'normal11')(conv11)
-    relu11 = keras.layers.Activation('relu', name = 'relu11')(norm11)
-    #12th conv layer - add
-    conv12 = keras.layers.Conv2D(256, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv12')(relu11)
-    add6 = keras.layers.add([add5, conv12], name = 'add6')
-    norm12 = keras.layers.BatchNormalization(axis = 3, name = 'normal12')(add6)
-    relu12 = keras.layers.Activation('relu', name = 'relu12')(norm12)
-    #13th conv layer - no add - increase to 512 filters
-    conv13 = keras.layers.Conv2D(512, (3, 3), strides = (2, 2), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv13')(relu12)
-    norm13 = keras.layers.BatchNormalization(axis = 3, name = 'normal13')(conv13)
-    relu13 = keras.layers.Activation('relu', name = 'relu13')(norm13)
-    #14th conv layer - add
-    conv14 = keras.layers.Conv2D(512, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv14')(relu13)
-    conv14_2 = keras.layers.Conv2D(512, (1, 1), strides = (2, 2), padding = 'valid', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv14_2')(add6)
-    add7 = keras.layers.add([conv14, conv14_2], name = 'add7')
-    norm14 = keras.layers.BatchNormalization(axis = 3, name = 'normal14')(add7)
-    relu14 = keras.layers.Activation('relu', name = 'relu14')(norm14)
-    #15th conv layer - no add
-    conv15 = keras.layers.Conv2D(512, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv15')(relu14)
-    norm15 = keras.layers.BatchNormalization(axis = 3, name = 'normal15')(conv15)
-    relu15 = keras.layers.Activation('relu', name = 'relu15')(norm15)
-    #16th conv layer - add - final layer
-    conv16 = keras.layers.Conv2D(512, (3, 3), strides = (1, 1), padding = 'same', activation = 'relu',
-                        kernel_initializer = 'he_normal', name = 'conv16')(relu15)
-    add8 = keras.layers.add([add7, conv16], name = 'add8')
-    norm16 = keras.layers.BatchNormalization(axis = 3, name = 'normal16')(add8)
-    relu16 = keras.layers.Activation('relu', name = 'relu16')(norm16)
-    #avg pooling layer
-    apool1 = keras.layers.AveragePooling2D(pool_size = (1, 1), strides = (1, 1))(relu16)
-    flatten = keras.layers.Flatten()(apool1)
-    dense1 = keras.layers.Dense(4096, kernel_initializer = 'he_normal',
-                               activation = 'relu', name = 'fc1')(flatten)
-    dense2 = keras.layers.Dense(4096, kernel_initializer = 'he_normal',
-                               activation = 'relu', name = 'fc2')(dense1)
-    output = keras.layers.Dense(1, kernel_initializer = 'he_normal',
-                               activation = 'sigmoid', name = 'output')(dense2)
+        labeled_df_temp.to_csv(ship_path + 'annotate.txt', index = False, header = False)
+    return labeled_df_temp
     
-    model = keras.models.Model(inpt, output)
-    
-    return model
-
-model = resnet()
-
-optimizer = keras.optimizers.RMSprop(.0001)
-model.compile(
-    optimizer=optimizer, 
-    loss="binary_crossentropy", 
-    metrics=["accuracy"]
-)
-
-history = model.fit(
-    train_generator, 
-    steps_per_epoch=train_steps,
-    validation_data=validate_generator,
-    validation_steps=validate_steps,
-    epochs=epochs
-)
-
-from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Input
-from tensorflow.python.keras.applications.xception import Xception
-
-inp = Input(shape = (224, 224, 3))
-base_model = Xception(include_top = False, input_tensor = inp, weights= 'imagenet')
-y = base_model.layers[-1].output
-y = GlobalAveragePooling2D()(y)
-y = Dense(4)(y)
-model = keras.models.Model(inp, y)
-
-sample_df = labeled_df2.sample(100, random_state = 27)
-train_df, val_df = train_test_split(sample_df, test_size = .25, random_state = 27)
-
-
