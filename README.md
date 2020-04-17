@@ -11,15 +11,28 @@ Prepocessing Steps:
 
 Training Steps:
 
-For training, I am using this ![Keras implementation of Faster RCNN](https://github.com/kbardool/keras-frcnn)
+For training, I am using this [Keras implementation of Faster RCNN](https://github.com/kbardool/keras-frcnn)
 
 Note that code will be changed in the implementation to work with newest versions of TensorFlow (2.1.0) and Keras (2.3.1).
+
+Requirements:
+
+- Tensorflow GPU 2.1.0
+- Keras 2.3.1
+- Pillow 7.0.0
+- Opencv-Python 4.1.2.30
+- Numpy 1.18.1
+- Pandas 1.0.3
+- Scikit-Image 0.15.0
+- Matplotlib 3.1.3
+- TODO if needed more
 
 1. Clone repository
 2. Either move repository to main directory that contains training/testing image directories or move training/testing image directories to model repository
 3. In any model files containing **K.image_dim_ordering()**, replace with **K.common.image_dim_ordering()**
 4. In `FixedBatchNormalization.py`, in any `self.add_weight()` calls change shape to shape = shape
 5. In config.py, change `self.im_size` to 256
+6. Navigate to model folder and run python train_frcnn.py -o simple -p annotate.txt --num_epochs number_of_epochs --input_weight_path ./model_frcnn_256.hdf5 --output_weight_path ./model_frcnn_256.hdf5
 
 Known Issues:
 
