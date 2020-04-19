@@ -34,8 +34,9 @@ If processed correctly, you should not need to rerun these utilities.
 
 
 bbox_df = pd.read_csv(ship_path + 'bbox_imgs.csv')
-resized_bbox_df = pd.read_csv(ship_path + 'labeled_ships.csv')
-annotations_final = pd.read_csv(ship_path + 'annotate.txt', header = False)
+resized_bbox_df = pd.read_csv(ship_path + 'labeled_ships.csv', header = None)
+resized_bbox_df.columns = ['ImageId', 'x', 'y', 'xmax', 'ymax', 'class_name']
+annotations_final = pd.read_csv(ship_path + 'annotate.txt', header = None)
 annotations_final.columns = ['file_path', 'x1', 'y1', 'x2', 'y2', 'class_name']
 '''
 
@@ -239,7 +240,7 @@ def resize_and_relabel_bbox_df(bbox_df, ship_path, size = 768, target = 256, to_
         labeled_df.to_csv(ship_path + 'labeled_ships.csv', index = False)
     return labeled_df
 
-def reformat_label_df(labeled_df, img_path, ship_path, to_csv = False):
+def reformat_label_df(labeled_df, img_path, ship_path, smallest_area = 320, to_csv = False):
     '''
     use to reformat labeled df to specific format required
     for pushing through model training algorithm
@@ -248,6 +249,7 @@ def reformat_label_df(labeled_df, img_path, ship_path, to_csv = False):
         labeled_df - pandas dataframe of format ImageId, x, y, xmax, ymax, label
         img_path - path to images
         ship_path - path to export csv to
+        percentile - remove all objects smaller than this. This is useful to help with training and limit misclassifications
         to_csv - default: False. Set to true to export csv to ship_path root directory
     returns:
         reformatted dataframe of format required for training
@@ -263,8 +265,12 @@ def reformat_label_df(labeled_df, img_path, ship_path, to_csv = False):
     labeled_df_temp.xmax = ymax
     labeled_df_temp.ymax = xmax
     
+    areas = [(y2 - y1)*(x2 - x1) for (x1, y1, x2, y2) in zip(labeled_df_temp['x'], labeled_df_temp['y'], labeled_df_temp['xmax'], labeled_df_temp['ymax'])]
+    labeled_df_temp['area'] = areas
+    labeled_df_temp = labeled_df_temp[labeled_df_temp['area'] >= smallest_area] # remove all images with smaller area than this
+    
     labeled_df_temp['file_path'] = img_path + labeled_df['ImageId']
-    labeled_df_temp.drop('ImageId', axis=1, inplace=True)
+    labeled_df_temp.drop(['ImageId', 'area'], axis=1, inplace=True)
     cols = labeled_df_temp.columns.tolist()
     cols = cols[-1:] + cols[:-1]
     
@@ -273,4 +279,7 @@ def reformat_label_df(labeled_df, img_path, ship_path, to_csv = False):
     if to_csv:
         labeled_df_temp.to_csv(ship_path + 'annotate.txt', index = False, header = False)
     return labeled_df_temp
+
+
+
     
