@@ -105,24 +105,58 @@ def calculate_mean_iou(true_annotations, predicted_annotations):
         true = true_annotations[true_annotations['img_id'] == img_id] # get true bounding boxes for current image
         predicted = predicted_annotations[predicted_annotations['img_id'] == img_id] # get predicted bounding boxes for current image
         
+        #create list of box objects for each bounding box in true annotations
         true_bboxes = [box(x1, y1, x2, y2) for i, (x1, y1, x2, y2, class_name, img_id) in true.iterrows()]
+        
+        #case when model predicts no instances of ships in an image so predicted is empty
         if len(predicted) == 0:
-            iou = 0
+            iou = 0 # if nothing predicted then intersection over union is zero
             ious.append(iou)
             continue
-        
+        #create list of box objects for each bounding box in predicted annotations
         predicted_bboxes = [box(x1, y1, x2, y2) for i, (x1, y1, x2, y2, img_id) in predicted.iterrows()]
         
+        #generate union of true bounding boxes
         true_union = unary_union(true_bboxes)
+        #generate union of predicted bounding boxes
         predicted_union = unary_union(predicted_bboxes)
+        #calculate intersection of true union and predicted union
         intersection = true_union.intersection(predicted_union)
+        #calculate intersection over union : https://en.wikipedia.org/wiki/Jaccard_index
         iou = intersection.area / true_union.area
         ious.append(iou)
+    #compute mean intersection over union
     return np.mean(ious)
 
 def show_images(true_annotations, predicted_annotations, resize_path, n = 5, seed = 27):
     
-    useable_images = true_annotations['img_id'][true_annotations['img_id'].isin(predicted_annotations['img_id'])]
+    '''
+    Display images with true and predicted bounding box overlayed
+    
+    Parameters
+    ----------
+    true_annotations : dataframe
+        Dataframe consisting of true annotations for image data
+        x1, y1, x2, y2 coordinates and image id
+    predicted_annotations : dataframe
+        Dataframe consisting of predicted annotations for image data
+        x1, y2, x2, y2 coordinates and image id
+    resize_path : str
+        String consisting of path to resized image data
+    n : int
+        Number of images to randomly sample for display
+        Default: 5
+    seed : int
+        Seed to initialize to random state to maintain same images between function calls
+        Default : 27
+    
+    Returns
+    -------
+    None 
+    '''
+    #useable images are all images in predicted annotations (val set)
+    useable_images = predicted_annotations['img_id']
+    #sample n images to display
     useable_images = useable_images.sample(n, random_state = seed)
     
     for img_id in useable_images.values:
