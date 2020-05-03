@@ -15,6 +15,11 @@ For training, I am using this [Keras implementation of Faster RCNN](https://gith
 
 Note that code will be changed in the implementation to work with newest versions of TensorFlow (2.1.0) and Keras (2.3.1).
 
+Some added changes are that I have:
+
+- Slightly edited test_frcnn.py file for sending predicted annotations to a csv file for use on validation set
+- Added the ability to log losses during training through tensorboard
+
 Requirements:
 
 - Tensorflow GPU 2.1.0
@@ -25,7 +30,7 @@ Requirements:
 - Pandas 1.0.3
 - Scikit-Image 0.15.0
 - Matplotlib 3.1.3
-- TODO if needed more
+- Shapely
 
 1. Clone repository
 2. Either move repository to main directory that contains training/testing image directories or move training/testing image directories to model repository
@@ -33,6 +38,11 @@ Requirements:
 4. In `FixedBatchNormalization.py`, in any `self.add_weight()` calls change shape to shape = shape
 5. In config.py, change `self.im_size` to 256
 6. Navigate to model folder and run python train_frcnn.py -o simple -p annotate.txt --num_epochs number_of_epochs --input_weight_path ./model_frcnn_256.hdf5 --output_weight_path ./model_frcnn_256.hdf5
+
+Examples:
+
+![](Images/samplebbox1.png) ![](Images/samplebbox2.png)
+![](Images/predicted1.png)  ![](Images/predicted3.png)
 
 Known Issues:
 
